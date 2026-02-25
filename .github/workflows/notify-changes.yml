@@ -10,37 +10,39 @@ jobs:
   check-upstream:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout fork
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check for upstream changes
+      - name: Get latest upstream commit SHA via GitHub API
         id: upstream_check
         run: |
-          # Add the upstream remote
-          git remote add upstream https://github.com/gematik/api-erp.git
-          git fetch upstream
-
-          # Get the latest commit SHA on upstream master
-          UPSTREAM_SHA=$(git rev-parse upstream/master)
-          FORK_SHA=$(git rev-parse origin/master)
+          # Fetch the latest commit SHA on upstream master via GitHub API (no git clone needed)
+          UPSTREAM_SHA=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/gematik/api-erp/commits/master" \
+            | jq -r '.sha')
 
           echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
-          echo "fork_sha=$FORK_SHA" >> $GITHUB_OUTPUT
 
-          if [ "$UPSTREAM_SHA" != "$FORK_SHA" ]; then
+          # Compare against the last known SHA stored as a repo variable
+          LAST_KNOWN_SHA="${{ vars.LAST_UPSTREAM_SHA }}"
+
+          echo "last_known_sha=$LAST_KNOWN_SHA" >> $GITHUB_OUTPUT
+
+          if [ "$UPSTREAM_SHA" != "$LAST_KNOWN_SHA" ] && [ -n "$UPSTREAM_SHA" ]; then
             echo "has_changes=true" >> $GITHUB_OUTPUT
 
-            # Count new commits
-            NEW_COMMITS=$(git log origin/master..upstream/master --oneline | wc -l | tr -d ' ')
-            echo "new_commits=$NEW_COMMITS" >> $GITHUB_OUTPUT
+            # Get commit details
+            COMMIT_JSON=$(curl -s \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/gematik/api-erp/commits/master")
 
-            # Get details of new commits
-            COMMIT_LOG=$(git log origin/master..upstream/master --pretty=format:'- %s (%an, %ci)' | head -10)
-            echo "commit_log<<EOF" >> $GITHUB_OUTPUT
-            echo "$COMMIT_LOG" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            COMMIT_MSG=$(echo "$COMMIT_JSON" | jq -r '.commit.message | split("\n")[0]')
+            COMMIT_AUTHOR=$(echo "$COMMIT_JSON" | jq -r '.commit.author.name')
+            COMMIT_DATE=$(echo "$COMMIT_JSON" | jq -r '.commit.author.date')
+
+            echo "commit_message=$COMMIT_MSG" >> $GITHUB_OUTPUT
+            echo "commit_author=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
+            echo "commit_date=$COMMIT_DATE" >> $GITHUB_OUTPUT
           else
             echo "has_changes=false" >> $GITHUB_OUTPUT
           fi
@@ -50,6 +52,15 @@ jobs:
         run: |
           curl -H 'Content-Type: application/json' \
                -d '{
-                 "text": "**[api-erp] Upstream Changes Detected!**\n\n**New commits on gematik/api-erp:** ${{ steps.upstream_check.outputs.new_commits }}\n\n**Recent changes:**\n${{ steps.upstream_check.outputs.commit_log }}\n\n[View upstream changes](https://github.com/gematik/api-erp/compare/${{ steps.upstream_check.outputs.fork_sha }}...${{ steps.upstream_check.outputs.upstream_sha }})"
+                 "text": "**[api-erp] Upstream Change Detected!**\n\n**Commit:** `${{ steps.upstream_check.outputs.upstream_sha }}`\n**Author:** ${{ steps.upstream_check.outputs.commit_author }}\n**Date:** ${{ steps.upstream_check.outputs.commit_date }}\n**Message:** ${{ steps.upstream_check.outputs.commit_message }}\n\n[View on GitHub](https://github.com/gematik/api-erp/commit/${{ steps.upstream_check.outputs.upstream_sha }})"
                }' \
                '${{ secrets.TEAMS_WEBHOOK_URL }}'
+
+      - name: Update last known upstream SHA variable
+        if: steps.upstream_check.outputs.has_changes == 'true'
+        run: |
+          curl -s -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/variables/LAST_UPSTREAM_SHA" \
+            -d "{\"name\":\"LAST_UPSTREAM_SHA\",\"value\":\"${{ steps.upstream_check.outputs.upstream_sha }}\"}"
