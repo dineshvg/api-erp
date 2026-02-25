@@ -1,0 +1,56 @@
+name: Notify on Repository Changes
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  schedule:
+    # Check for upstream changes every day at 8 AM UTC
+    - cron: '0 8 * * *'
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Get commit info
+        id: commit_info
+        run: |
+          echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "commit_message=$(git log -1 --pretty=%s)" >> $GITHUB_OUTPUT
+          echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+          echo "commit_date=$(git log -1 --pretty=%ci)" >> $GITHUB_OUTPUT
+          echo "changed_files=$(git diff --name-only HEAD~1 HEAD | tr '\n' ', ' | sed 's/,$//')" >> $GITHUB_OUTPUT
+
+      - name: Send email notification
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "[api-erp] Repository Change Detected - ${{ steps.commit_info.outputs.commit_message }}"
+          to: dinesh.gangatharan@gematik.de
+          from: ${{ secrets.MAIL_USERNAME }}
+          body: |
+            A change has been detected in the gematik/api-erp repository.
+
+            Commit SHA:    ${{ steps.commit_info.outputs.commit_sha }}
+            Author:        ${{ steps.commit_info.outputs.commit_author }}
+            Date:          ${{ steps.commit_info.outputs.commit_date }}
+            Message:       ${{ steps.commit_info.outputs.commit_message }}
+            Changed Files: ${{ steps.commit_info.outputs.changed_files }}
+
+            View the changes on GitHub:
+            https://github.com/gematik/api-erp/commit/${{ steps.commit_info.outputs.commit_sha }}
+
+            ---
+            This is an automated notification from your GitHub Actions workflow.
+            Repository: dineshvg/api-erp (forked from gematik/api-erp)
