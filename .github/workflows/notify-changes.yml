@@ -1,38 +1,55 @@
-name: Notify on Repository Changes
+name: Notify on Upstream Repository Changes
 
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
   schedule:
-    # Check for upstream changes every day at 8 AM UTC
-    - cron: '0 8 * * *'
+    # Poll the upstream repo every hour
+    - cron: '0 * * * *'
+  workflow_dispatch: # Allow manual trigger
 
 jobs:
-  notify:
+  check-upstream:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout fork
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Get commit info
-        id: commit_info
+      - name: Check for upstream changes
+        id: upstream_check
         run: |
-          echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-          echo "commit_message=$(git log -1 --pretty=%s)" >> $GITHUB_OUTPUT
-          echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
-          echo "commit_date=$(git log -1 --pretty=%ci)" >> $GITHUB_OUTPUT
-          echo "changed_files=$(git diff --name-only HEAD~1 HEAD | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
+          # Add the upstream remote
+          git remote add upstream https://github.com/gematik/api-erp.git
+          git fetch upstream
+
+          # Get the latest commit SHA on upstream master
+          UPSTREAM_SHA=$(git rev-parse upstream/master)
+          FORK_SHA=$(git rev-parse origin/master)
+
+          echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+          echo "fork_sha=$FORK_SHA" >> $GITHUB_OUTPUT
+
+          if [ "$UPSTREAM_SHA" != "$FORK_SHA" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+
+            # Count new commits
+            NEW_COMMITS=$(git log origin/master..upstream/master --oneline | wc -l | tr -d ' ')
+            echo "new_commits=$NEW_COMMITS" >> $GITHUB_OUTPUT
+
+            # Get details of new commits
+            COMMIT_LOG=$(git log origin/master..upstream/master --pretty=format:'- %s (%an, %ci)' | head -10)
+            echo "commit_log<<EOF" >> $GITHUB_OUTPUT
+            echo "$COMMIT_LOG" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Post to Microsoft Teams channel
+        if: steps.upstream_check.outputs.has_changes == 'true'
         run: |
           curl -H 'Content-Type: application/json' \
                -d '{
-                 "text": "**[api-erp] Repository Change Detected**\n\n**Commit:** `${{ steps.commit_info.outputs.commit_sha }}`\n**Author:** ${{ steps.commit_info.outputs.commit_author }}\n**Date:** ${{ steps.commit_info.outputs.commit_date }}\n**Message:** ${{ steps.commit_info.outputs.commit_message }}\n**Changed Files:** ${{ steps.commit_info.outputs.changed_files }}\n\n[View on GitHub](https://github.com/gematik/api-erp/commit/${{ steps.commit_info.outputs.commit_sha }})"
+                 "text": "**[api-erp] Upstream Changes Detected!**\n\n**New commits on gematik/api-erp:** ${{ steps.upstream_check.outputs.new_commits }}\n\n**Recent changes:**\n${{ steps.upstream_check.outputs.commit_log }}\n\n[View upstream changes](https://github.com/gematik/api-erp/compare/${{ steps.upstream_check.outputs.fork_sha }}...${{ steps.upstream_check.outputs.upstream_sha }})"
                }' \
                '${{ secrets.TEAMS_WEBHOOK_URL }}'
