@@ -6,6 +6,10 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch: # Allow manual trigger
 
+permissions:
+  contents: read
+  actions: write # Required to update repository variables
+
 jobs:
   check-upstream:
     runs-on: ubuntu-latest
@@ -47,6 +51,29 @@ jobs:
             echo "has_changes=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Update last known upstream SHA variable
+        if: steps.upstream_check.outputs.has_changes == 'true'
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/variables/LAST_UPSTREAM_SHA" \
+            -d "{\"name\":\"LAST_UPSTREAM_SHA\",\"value\":\"${{ steps.upstream_check.outputs.upstream_sha }}\"}"
+          )
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+          
+          if [ "$HTTP_CODE" -eq 204 ] || [ "$HTTP_CODE" -eq 200 ]; then
+            echo "Successfully updated LAST_UPSTREAM_SHA variable"
+            echo "update_success=true" >> $GITHUB_OUTPUT
+          else
+            echo "Failed to update LAST_UPSTREAM_SHA variable. HTTP Code: $HTTP_CODE"
+            echo "Response: $BODY"
+            echo "update_success=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
       - name: Post to Microsoft Teams channel
         if: steps.upstream_check.outputs.has_changes == 'true'
         run: |
@@ -55,12 +82,3 @@ jobs:
                  "text": "**[api-erp] Upstream Change Detected!**\n\n**Commit:** `${{ steps.upstream_check.outputs.upstream_sha }}`\n**Author:** ${{ steps.upstream_check.outputs.commit_author }}\n**Date:** ${{ steps.upstream_check.outputs.commit_date }}\n**Message:** ${{ steps.upstream_check.outputs.commit_message }}\n\n[View on GitHub](https://github.com/gematik/api-erp/commit/${{ steps.upstream_check.outputs.upstream_sha }})"
                }' \
                '${{ secrets.TEAMS_WEBHOOK_URL }}'
-
-      - name: Update last known upstream SHA variable
-        if: steps.upstream_check.outputs.has_changes == 'true'
-        run: |
-          curl -s -X PATCH \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/variables/LAST_UPSTREAM_SHA" \
-            -d "{\"name\":\"LAST_UPSTREAM_SHA\",\"value\":\"${{ steps.upstream_check.outputs.upstream_sha }}\"}"
